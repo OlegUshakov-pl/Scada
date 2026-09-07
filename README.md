@@ -24,6 +24,27 @@ podman exec -it my_scada-redis-1 redis-cli HSET latest_tags pressure 1.5 temp_01
 
 Через 5 сек в логах `logic_engine` должно сработать правило "Защита насоса".
 
+## Авторизация
+
+Зависимостей не добавлялось — только встроенный `django.contrib.auth`.
+
+- `/api/*` требует либо сессию залогиненного пользователя, либо Bearer-токен сервиса:
+  `Authorization: Bearer <токен>`
+- Дашборд `screens/<id>/` требует логин (редирект на `/admin/login/`), JS ходит к API по куке сессии
+- Токен привязан к `User` (`ServiceToken`), поэтому будущие права лягут на стандартные
+  `has_perm`/`Group` без рефакторинга — сервисы наследуют права владельца токена
+
+```
+# создать пользователя и токен (сырой токен показывается один раз!)
+python manage.py createsuperuser
+python manage.py create_service_token --user <username> --name logic_engine
+
+# logic_engine забирает правила с токеном (без токена — 401 и работа на кэше)
+SCADA_API_TOKEN=<токен> DJANGO_URL=http://localhost:8000 python engine.py
+```
+
+Отзыв токена — флаг `is_active` в админке (`ServiceToken`) или удаление записи.
+
 ## Версии
 
 - Python 3.14 (`python:3.14-slim` во всех трёх Dockerfile)

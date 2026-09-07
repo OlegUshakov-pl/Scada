@@ -1,0 +1,5 @@
+# Пример конфига для C3-драйвера (формат: name,address построчно)
+# Генерируется командой: python manage.py export_device_config 1 --out /config/device_1.txt
+pressure,0
+temp_01,1
+pump_fb,2

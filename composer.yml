@@ -42,6 +42,8 @@ services:
     environment:
       - REDIS_HOST=redis
       - POSTGRES_HOST=postgres
+      - DJANGO_URL=http://django:8000
+      - SCADA_API_TOKEN=${SCADA_API_TOKEN:-}
     depends_on:
       - redis
       - postgres
