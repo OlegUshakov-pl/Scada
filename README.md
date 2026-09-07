@@ -73,7 +73,7 @@ modbus.c3                    # пример/набросок на C3 (корен
 ## Стек и версии
 
 - Python 3.14 (`python:3.14-slim` в Dockerfile)
-- Django ≥ 5.2 (первая с официальной поддержкой Python 3.14), БД по умолчанию — SQLite (`db.sqlite3`), TimescaleDB/PostgreSQL 17 — в compose для будущего
+- Django 6.1.1 (Python 3.12–3.14, `python:3.14-slim` в Dockerfile), БД по умолчанию — SQLite (`db.sqlite3`), TimescaleDB/PostgreSQL 17 — в compose для будущего
 - FastAPI + uvicorn, `redis-py`, `requests` (logic_engine)
 - C3 (`c3c`), libmodbus, hiredis — для драйвера
 - Зависимостей для авторизации не добавлялось — только встроенный `django.contrib.auth`
