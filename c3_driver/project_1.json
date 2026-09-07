@@ -1,0 +1,1 @@
+{"langrev":"1","warnings":["no-unused"],"sources":["modbus.c3"],"link-args":["-lmodbus","-lhiredis"]}
