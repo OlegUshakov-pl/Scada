@@ -56,9 +56,13 @@ services:
 
   redis:
     image: redis:7-alpine
+    ports:
+      - "6379:6379"
 
   postgres:
     image: timescale/timescaledb:latest-pg17
+    ports:
+      - "5432:5432"
     environment:
       POSTGRES_DB: scada
       POSTGRES_USER: postgres
