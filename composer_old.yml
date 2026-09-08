@@ -15,10 +15,8 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=scada_dev_password
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
+      - postgres
+      - redis
 
   fastapi:
     build:
@@ -32,10 +30,8 @@ services:
       - REDIS_HOST=redis
       - POSTGRES_HOST=postgres
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
+      - postgres
+      - redis
 
   logic_engine:
     build:
@@ -49,10 +45,8 @@ services:
       - DJANGO_URL=http://django:8000
       - SCADA_API_TOKEN=${SCADA_API_TOKEN:-}
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
+      - redis
+      - postgres
 
   redis:
     image: redis:7-alpine
@@ -65,11 +59,6 @@ services:
       POSTGRES_PASSWORD: scada_dev_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d scada"]
-      interval: 3s
-      timeout: 3s
-      retries: 5
 
 volumes:
   postgres_data:
