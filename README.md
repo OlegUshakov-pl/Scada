@@ -164,16 +164,16 @@ redis-cli HSET latest_tags pressure 1.5 temp_01 95 pump_fb 1
 | `Device` | устройство (ПЛК) | `name`, `ip`, `protocol` (modbus/opcua/s7) |
 | `Tag` | тэг устройства | `device`, `name`, `address` (регистр), `unit` |
 | `Rule` | правило Logic Engine | `name`, `condition` (Python), `action` (Python), `is_active` |
-| `Screen` | экран дашборда | `name`, `layout` (legacy JSON, не используется, оставлен как есть) |
-| `Widget` | виджет на экране | `screen`, `tag`, `widget_type` (number/chart/indicator), `row`, `col`, `label` |
+| `Screen` | экран: дашборд + конструктор | `name`, `width`, `height`, `widgets` (JSON), `created_at`, `updated_at`; `layout` — legacy, оставлен как есть |
+| `Widget` | legacy-таблица виджетов (дашборд row/col) | `screen` (related `legacy_widgets`), `tag`, `widget_type`, `row`, `col`, `label` |
 | `ServiceToken` | сервисный токен для `/api/*` | `user` (владелец), `name`, `key_hash` (sha256), `is_active` |
 | `SimulatorDevice` | виртуальный генератор (приложение `emulator`) | `device` (FK), `tag` (FK), `signal_type`, `mode`, `min/max_value`, `period`, `update_interval`, `enabled` |
 
-Админка: `Tag` — inline на странице `Device`, `Widget` — inline (`TabularInline`)
-на странице `Screen`. `SimulatorDevice` — отдельная страница в разделе «Эмулятор»
+Админка: `Tag` — inline на странице `Device`, legacy-`Widget` — inline
+(`TabularInline`) на странице `Screen`. `SimulatorDevice` — отдельная страница в разделе «Эмулятор»
 (фильтры по `signal_type`/`mode`/`enabled`, быстрое вкл/выкл через `list_editable`).
-Раскладка виджетов задаётся числами `row`/`col` — drag-n-drop сознательно
-не делался (достаточно для MVP).
+Раскладка legacy-дашборда задаётся числами `row`/`col`. Новый конструктор
+(`Screen.widgets` JSON) перетаскивается мышью — см. раздел «Конструктор экранов».
 
 Seed-демо (`scada/migrations/0002_seed.py`, идемпотентно через `get_or_create`):
 устройство «Насосная 1» (192.168.1.10, modbus), тэги `pressure/0/bar`,
@@ -204,9 +204,23 @@ FASTAPI_URL=http://localhost:9000 REDIS_HOST=localhost python manage.py run_simu
 | Метод | URL | Ответ |
 |---|---|---|
 | `GET` | `/api/rules/` | активные правила: `[{"name","condition","action"}, ...]` |
+| `GET` | `/api/devices/` | устройства для панели свойств конструктора |
+| `GET` | `/api/tags/` (`?device_id=`) | тэги для панели свойств: `[{"id","device_id","device","name","address","unit"}]` |
 | `GET` | `/api/devices/<id>/tags/` | карта регистров: `[{"name","address","unit"}, ...]` по возрастанию адреса |
-| `GET` | `/api/screens/<id>/widgets/` | виджеты: `[{"id","tag","unit","widget_type","row","col","label"}, ...]` |
+| `GET` | `/api/screens/` | список экранов (конструктор) |
+| `POST` | `/api/screens/` | создание экрана — **только staff**, иначе `403` |
+| `GET` | `/api/screens/<id>/` | экран целиком с `widgets` |
+| `PATCH` | `/api/screens/<id>/` | сохранение — **только staff**; при конфликте правок — `409` (см. ниже) |
+| `GET` | `/api/screens/<id>/widgets/` | legacy-виджеты row/col для старого дашборда |
 | `GET` | `/screens/<id>/` | HTML-дашборд (требует логин, редирект на `/admin/login/`) |
+| `GET` | `/screens/<id>/edit/` | конструктор мнемосхем (**только staff**, иначе `403`) |
+
+Права: просмотр — любой залогиненный (или Bearer-токен активного
+пользователя); запись экранов — только `is_staff` (сервисные токены наследуют
+права владельца). Конфликт одновременного редактирования: Save шлёт
+`updated_at` с прошлой загрузки; если экран уже сохранил кто-то другой —
+`409 {"detail": "Conflict...", "current": {...}}`, редактор предлагает
+перезаписать или загрузить чужую версию. Блокировок нет.
 
 Примеры:
 
@@ -214,7 +228,10 @@ FASTAPI_URL=http://localhost:9000 REDIS_HOST=localhost python manage.py run_simu
 T=<токен>
 curl -H "Authorization: Bearer $T" http://localhost:8000/api/rules/
 curl -H "Authorization: Bearer $T" http://localhost:8000/api/devices/1/tags/
-curl -H "Authorization: Bearer $T" http://localhost:8000/api/screens/1/widgets/
+curl -H "Authorization: Bearer $T" http://localhost:8000/api/screens/
+curl -H "Authorization: Bearer $T" http://localhost:8000/api/screens/1/
+curl -X PATCH -H "Authorization: Bearer $T" -H "Content-Type: application/json" \
+  -d '{"name":"Котельная №1","widgets":[...]}' http://localhost:8000/api/screens/1/
 ```
 
 ## Авторизация
@@ -366,12 +383,39 @@ fallback на встроенную карту (`pressure/0`, `temp_01/1`, `pump_
 - Сборка: `c3c compile modbus_1.c3 -lmodbus -lhiredis -o driver` (нужны `c3c`,
   `libmodbus-dev`, `hiredis`). `modbus.c3` / `modbus_http.c3` — заглушки и примеры.
 
+## Конструктор экранов (`/screens/<id>/edit/`, только staff)
+
+Вариант А из ТЗ (Django-шаблон `scada/templates/scada/constructor.html`,
+без Vite/CORS — страница и API на одном домене по сессии). Исходников React
+нет (прототип `Scada-Constructor-Prototype.html` — собранный бандл), поэтому
+редактор написан на ванильном JS с тем же функционалом.
+
+Формат виджета в `Screen.widgets` (JSON):
+`{id, type, x, y, w, h, color, label, rotation, tag_id, device_id,
+warn_above, alarm_above}`. Привязка — `{tag_id, device_id}` на реальные
+`Tag`/`Device` (могут быть `null` — труба/label без тэга), выбираются
+в панели свойств из `GET /api/tags/`.
+
+Возможности: палитра → drag-and-drop на канвас (типы `pump, valve, tank,
+motor, pipe-h/v, label, indicator, number, lamp, fan`; новый тип — одна запись
+в словаре `TYPES`), drag мышью, Shift+клик — мультивыбор с групповым
+перетаскиванием/удалением, undo/redo (до 50 шагов, Ctrl+Z/Ctrl+Y),
+условное форматирование (`warn_above`/`alarm_above` — рамка янтарь/красная;
+насосы/моторы — зелёный/красный по вкл/выкл), dropdown-навигация между экранами,
+alarm-баннер в Preview (`GET :9000/alarms`), Save — `PATCH /api/screens/<id>/`
+с защитой от конфликта (409), живой JSON модели внизу.
+
 ## Дашборд
 
 `GET /screens/<id>/` — чистый HTML+JS без фреймворков (`scada/templates/scada/dashboard.html`):
 
 - раскладка — CSS-grid по `row`/`col` виджетов (обновляется каждые 30 с из API);
-- live-данные — WebSocket `ws://<host>:9000/ws/live` (тот же, что отдаёт FastAPI);
+- live-данные — WebSocket `ws://<host>:9000/ws/live`: при коннекте один полный
+  снапшот, дальше только дельты `{tag: value}` изменившихся значений;
+  клиент может прислать `{"subscribe": ["tag1", ...]}` (имена тэгов) —
+  тогда дельты только по ним. Опрос сервера — каждые `WS_POLL_SEC` (0.5 с).
+  Конструктор резолвит `tag_id → name` через `GET /api/tags/`.
+  Старый дашборд дельты понимает (игнорирует отсутствующие ключи);
 - типы: `number`/`chart` — текущее значение + единица; `indicator` — ● ВКЛ/ВЫКЛ.
 
 Требует логина. Для доступа FastAPI WS из браузера ничего дополнительно настраивать
@@ -387,13 +431,20 @@ fallback на встроенную карту (`pressure/0`, `temp_01/1`, `pump_
 | `cmd/<tag>` | PUB/SUB | Logic Engine | подписчики команд | `cmd/pump_01 = 0` |
 | `alarms` | LIST (LPUSH) | Logic Engine | операторы/мониторинг | `LRANGE alarms 0 10` |
 
-FastAPI: `POST /ingest {"tag": ..., "value": ...}` пишет в `latest_tags`;
+FastAPI: `POST /ingest {"tag": ..., "value": ...}` пишет в `latest_tags`
+и публикует в pub/sub канал `tag_updates`;
+`GET /alarms?limit=20` — последние аварии (Redis LIST `alarms`, пишет Logic Engine);
 `GET /history/{tag}` — заглушка под TimescaleDB.
 
 ## Типичные проблемы
 
 - **401 от `/api/*`** — нет заголовка `Authorization: Bearer` или токен отозван /
   пользователь неактивен. Выпусти новый через `create_service_token`.
+- **403 от `/api/screens/` или `/screens/<id>/edit/`** — запись экранов только
+  для `is_staff` (в админке поставь флаг «staff status»); просмотр доступен всем
+  залогиненным. Сервисным токенам нужен staff-владелец.
+- **409 при Save в конструкторе** — экран параллельно сохранил кто-то другой;
+  редактор предложит перезаписать или загрузить чужую версию.
 - **Logic Engine пишет «Django недоступен»** — проверь `DJANGO_URL` и что
   `runserver` поднят; движок при этом продолжает работать на кэше правил.
 - **Эмулятор пишет «POST /ingest недоступен, fallback в Redis»** — FastAPI
@@ -409,8 +460,11 @@ FastAPI: `POST /ingest {"tag": ..., "value": ...}` пишет в `latest_tags`;
 
 ## Что дальше
 
-- Права пользователей: `has_perm`-проверки в `api_auth_required` + группы в админке
-  (токены уже привязаны к `User` — см. «Авторизация»)
+- Права пользователей: гранулярные `has_perm`-проверки в `api_auth_required` +
+  группы в админке (база есть: запись экранов уже только для `is_staff`,
+  токены привязаны к `User` — см. «Авторизация»)
+- Конструктор: drag resize за угловые хендлы и rotation-хендл на канвасе
+  (пока — числами в панели свойств), перетаскивание палитры на тачскринах
 - TimescaleDB: история тэгов (`GET /history/{tag}`) и доделать `chart`-виджеты
 - `scale` в `Tag` + третья колонка конфига C3-драйвера
 - Запись команд C3-драйвером обратно в ПЛК (`HGET commands` → `modbus_write_register`)
