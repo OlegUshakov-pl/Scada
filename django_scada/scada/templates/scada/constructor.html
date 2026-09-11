@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>{{ screen.name }} — конструктор</title>
+<style>
+  body { font-family: sans-serif; background: #111; color: #eee; margin: 0; }
+  header { display: flex; gap: 8px; align-items: center; padding: 10px 16px; background: #18181b; border-bottom: 1px solid #333; flex-wrap: wrap; }
+  header button, header select { padding: 6px 10px; cursor: pointer; }
+  #wrap { display: flex; height: calc(100vh - 53px); }
+  #palette { width: 150px; background: #161617; border-right: 1px solid #333; padding: 10px; overflow-y: auto; }
+  #palette .item { background: #26262a; border: 1px solid #444; border-radius: 6px; padding: 8px; margin-bottom: 8px; cursor: grab; text-align: center; font-size: 13px; }
+  #canvas { flex: 1; position: relative; overflow: auto;
+    background-image: radial-gradient(#333 1.2px, transparent 1.2px); background-size: 20px 20px; }
+  #props { width: 250px; background: #161617; border-left: 1px solid #333; padding: 12px; overflow-y: auto; font-size: 13px; }
+  #props label { display: block; margin: 8px 0 2px; color: #aaa; }
+  #props input, #props select { width: 100%; box-sizing: border-box; padding: 4px; background: #222; color: #eee; border: 1px solid #444; }
+  .w { position: absolute; border: 2px solid #888; border-radius: 6px; display: flex; align-items: center; justify-content: center; cursor: move; user-select: none; background: #1e1e1e; }
+  .w.sel { outline: 2px solid #f59e0b; }
+  .w .val { position: absolute; bottom: -18px; font-size: 11px; background: #000; padding: 0 4px; border-radius: 3px; white-space: nowrap; }
+  #json { background: #000; color: #8f8; font-size: 11px; padding: 8px; max-height: 180px; overflow: auto; white-space: pre-wrap; }
+  #status { font-size: 12px; color: #888; margin-left: auto; }
+  #alarms { display: none; background: #7f1d1d; color: #fecaca; font-size: 13px; padding: 6px 16px; max-height: 90px; overflow-y: auto; }
+  #alarms.show { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <select id="screen-sel" title="Экраны"></select>
+  <span id="meta"></span>
+  <button id="btn-preview">▶ Preview</button>
+  <button id="btn-save">Save</button>
+  <button id="btn-undo" title="Ctrl+Z">↩ Undo</button>
+  <button id="btn-redo" title="Ctrl+Y">↪ Redo</button>
+  <button id="btn-del">Delete</button>
+  <span id="status"></span>
+</header>
+<div id="alarms"></div>
+<div id="wrap">
+  <div id="palette"></div>
+  <div id="canvas"></div>
+  <div id="props"><i>Выберите виджет (Shift+клик — несколько)</i></div>
+</div>
+<pre id="json"></pre>
+<script>
+// Библиотека символов: чтобы добавить новый тип, достаточно дописать запись
+// {w, h, label} — код палитры/канваса подхватит автоматически.
+const TYPES = {
+  pump:   {w: 56, h: 56, label: 'Н'}, valve: {w: 56, h: 56, label: 'К'},
+  tank:   {w: 140, h: 180, label: 'Бак'}, motor: {w: 56, h: 56, label: 'M'},
+  'pipe-h': {w: 120, h: 14, label: ''}, 'pipe-v': {w: 16, h: 120, label: ''},
+  label:  {w: 120, h: 28, label: 'Текст'}, indicator: {w: 80, h: 40, label: ''},
+  number: {w: 100, h: 50, label: ''},
+  lamp:   {w: 40, h: 40, label: '💡'}, fan: {w: 64, h: 64, label: '≈'},
+};
+const SCREEN_ID = {{ screen.id }};
+const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.hostname + ':9000/ws/live';
+const ALARMS_URL = (location.protocol === 'https:' ? 'https://' : 'http://') + location.hostname + ':9000/alarms?limit=5';
+let screen = {name: '', width: 900, height: 600, widgets: [], updated_at: null};
+let tags = [];
+let tagById = {};
+let selected = [];   // мультивыбор: массив id
+let undoStack = [], redoStack = [];
+let preview = false, ws = null, liveVals = {}, alarmTimer = null;
+
+function csrf() {
+  const m = document.cookie.match(/csrftoken=([^;]+)/);
+  return m ? m[1] : '';
+}
+async function api(path, opts = {}) {
+  const r = await fetch(path, {...opts, headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf(), ...(opts.headers || {})}});
+  if (!r.ok) {
+    let body = null;
+    try { body = await r.json(); } catch (e) {}
+    const err = new Error(path + ' -> ' + r.status + (body && body.detail ? ': ' + body.detail : ''));
+    err.status = r.status; err.body = body;
+    throw err;
+  }
+  return r.json();
+}
+// Снимок для undo: вызывать ПЕРЕД мутацией widgets
+function snapshot() {
+  undoStack.push(JSON.stringify(screen.widgets));
+  if (undoStack.length > 50) undoStack.shift();
+  redoStack = [];
+}
+function doUndo() {
+  if (!undoStack.length || preview) return;
+  redoStack.push(JSON.stringify(screen.widgets));
+  screen.widgets = JSON.parse(undoStack.pop());
+  selected = []; renderCanvas(); renderProps();
+}
+function doRedo() {
+  if (!redoStack.length || preview) return;
+  undoStack.push(JSON.stringify(screen.widgets));
+  screen.widgets = JSON.parse(redoStack.pop());
+  selected = []; renderCanvas(); renderProps();
+}
+
+// --- загрузка: список экранов для навигации + текущий экран + тэги ---
+async function load() {
+  const [screens, tagsResp, scr] = await Promise.all([
+    api('/api/screens/'), api('/api/tags/'), api(`/api/screens/${SCREEN_ID}/`),
+  ]);
+  tags = tagsResp;
+  tagById = Object.fromEntries(tags.map(t => [t.id, t]));
+  screen = scr;
+  const sel = document.getElementById('screen-sel');
+  sel.innerHTML = screens.map(s => `<option value="${s.id}" ${s.id === SCREEN_ID ? 'selected' : ''}>${s.name}</option>`).join('');
+  sel.onchange = e => { location.href = `/screens/${e.target.value}/edit/`; };
+  renderPalette(); renderCanvas(); renderProps();
+}
+
+function renderPalette() {
+  const p = document.getElementById('palette');
+  p.innerHTML = '';
+  Object.keys(TYPES).forEach(t => {
+    const d = document.createElement('div');
+    d.className = 'item'; d.draggable = !preview; d.textContent = t;
+    d.ondragstart = e => e.dataTransfer.setData('text/plain', t);
+    p.appendChild(d);
+  });
+}
+
+// Условное форматирование: цвет по порогам warn_above/alarm_above
+function statusColor(w, val) {
+  const v = Number(val);
+  if (val === undefined || val === null || Number.isNaN(v)) return w.color;
+  if (w.alarm_above !== null && w.alarm_above !== undefined && v >= w.alarm_above) return '#ef4444';
+  if (w.warn_above !== null && w.warn_above !== undefined && v >= w.warn_above) return '#f59e0b';
+  if (w.type === 'pump' || w.type === 'motor' || w.type === 'fan') return v ? '#22c55e' : '#ef4444';
+  return w.color;
+}
+
+function renderCanvas() {
+  const c = document.getElementById('canvas');
+  c.innerHTML = '';
+  c.style.minWidth = screen.width + 'px'; c.style.minHeight = screen.height + 'px';
+  screen.widgets.forEach(w => {
+    const tname = w.tag_id ? tagById[w.tag_id]?.name : null;
+    const val = tname ? liveVals[tname] : undefined;
+    const border = preview ? statusColor(w, val) : w.color;
+    const el = document.createElement('div');
+    el.className = 'w' + (selected.includes(w.id) ? ' sel' : '');
+    el.style.cssText = `left:${w.x}px;top:${w.y}px;width:${w.w}px;height:${w.h}px;transform:rotate(${w.rotation || 0}deg);border-color:${border}`;
+    el.innerHTML = `<span>${w.label || w.type}</span>` +
+      (preview && val !== undefined ? `<span class="val">${val}</span>` : '');
+    el.onclick = e => {
+      e.stopPropagation();
+      if (preview) return;
+      if (e.shiftKey) {
+        selected = selected.includes(w.id) ? selected.filter(id => id !== w.id) : [...selected, w.id];
+      } else {
+        selected = [w.id];
+      }
+      renderCanvas(); renderProps();
+    };
+    el.onpointerdown = e => { if (preview || e.button !== 0) return; dragWidget(e, w); };
+    c.appendChild(el);
+  });
+  document.getElementById('json').textContent = JSON.stringify({screen: screen.name, widgets: screen.widgets, version: 1}, null, 1);
+  document.getElementById('meta').textContent = `${screen.width}×${screen.height} • ${screen.widgets.length} widgets` +
+    (selected.length > 1 ? ` • выбрано: ${selected.length}` : '');
+}
+
+// Групповое перетаскивание всех выбранных
+function dragWidget(e, w) {
+  e.preventDefault();
+  if (!selected.includes(w.id)) selected = [w.id];
+  const group = screen.widgets.filter(v => selected.includes(v.id));
+  const startPos = new Map(group.map(v => [v.id, {x: v.x, y: v.y}]));
+  const ox = e.clientX, oy = e.clientY;
+  let moved = false;
+  const move = ev => {
+    const dx = Math.round(ev.clientX - ox), dy = Math.round(ev.clientY - oy);
+    if (dx || dy) moved = true;
+    group.forEach(v => { const s = startPos.get(v.id); v.x = s.x + dx; v.y = s.y + dy; });
+    renderCanvas();
+  };
+  const up = () => {
+    window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
+    if (!moved) undoStack.pop();  // клик без движения — не история
+    renderProps();
+  };
+  snapshot();
+  window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+}
+
+function renderProps() {
+  const p = document.getElementById('props');
+  const ws_ = screen.widgets.filter(v => selected.includes(v.id));
+  if (!ws_.length) { p.innerHTML = '<i>Выберите виджет (Shift+клик — несколько)</i>'; return; }
+  if (ws_.length > 1) {
+    p.innerHTML = `<b>Групповые операции</b><div>Выбрано: ${ws_.length}</div>
+      <div style="color:#aaa;margin-top:6px">Перетаскивание двигает все. Delete удаляет все. Пороги и привязки — по одному.</div>`;
+    return;
+  }
+  const w = ws_[0];
+  const tagOpts = `<option value="">— без привязки —</option>` + tags.map(t =>
+    `<option value="${t.id}" ${w.tag_id === t.id ? 'selected' : ''}>${t.device} / ${t.name}</option>`).join('');
+  p.innerHTML = `
+    <label>Тип</label><div>${w.type}</div>
+    <label>Тэг (реальный)</label><select id="f-tag">${tagOpts}</select>
+    <label>Label</label><input id="f-label" value="${w.label || ''}">
+    <label>Цвет (норма)</label><input id="f-color" type="color" value="${w.color || '#888888'}">
+    <label>Warn above (предупреждение)</label><input id="f-warn" type="number" step="any" value="${w.warn_above ?? ''}">
+    <label>Alarm above (авария)</label><input id="f-alarm" type="number" step="any" value="${w.alarm_above ?? ''}">
+    <label>Поворот</label><input id="f-rot" type="number" value="${w.rotation || 0}">
+    <label>X / Y / W / H</label>
+    <div style="display:flex;gap:4px">
+      <input id="f-x" type="number" value="${w.x}"><input id="f-y" type="number" value="${w.y}">
+      <input id="f-w" type="number" value="${w.w}"><input id="f-h" type="number" value="${w.h}">
+    </div>`;
+  document.getElementById('f-tag').onchange = e => {
+    snapshot();
+    const id = e.target.value ? Number(e.target.value) : null;
+    w.tag_id = id; w.device_id = id ? tagById[id].device_id : null;
+    renderCanvas();
+  };
+  const bind = (id, fn) => document.getElementById(id).oninput = e => { fn(e.target.value); renderCanvas(); };
+  const bindSnap = (id, fn) => document.getElementById(id).onchange = e => { snapshot(); fn(e.target.value); renderCanvas(); };
+  bind('f-label', v => w.label = v); bind('f-color', v => w.color = v);
+  bindSnap('f-warn', v => w.warn_above = v === '' ? null : Number(v));
+  bindSnap('f-alarm', v => w.alarm_above = v === '' ? null : Number(v));
+  bind('f-rot', v => w.rotation = Number(v)); bind('f-x', v => w.x = Number(v));
+  bind('f-y', v => w.y = Number(v)); bind('f-w', v => w.w = Number(v)); bind('f-h', v => w.h = Number(v));
+}
+
+document.getElementById('canvas').ondragover = e => e.preventDefault();
+document.getElementById('canvas').ondrop = e => {
+  e.preventDefault();
+  if (preview) return;
+  const type = e.dataTransfer.getData('text/plain');
+  if (!type || !TYPES[type]) return;
+  const rect = e.currentTarget.getBoundingClientRect();
+  const d = TYPES[type];
+  snapshot();
+  const w = {id: 'w_' + Date.now().toString(36), type, x: Math.round(e.clientX - rect.left - d.w / 2),
+    y: Math.round(e.clientY - rect.top - d.h / 2), w: d.w, h: d.h,
+    color: '#888888', label: d.label, rotation: 0, tag_id: null, device_id: null,
+    warn_above: null, alarm_above: null};
+  screen.widgets.push(w); selected = [w.id];
+  renderCanvas(); renderProps();
+};
+
+function tagNames() {
+  return [...new Set(screen.widgets.filter(w => w.tag_id && tagById[w.tag_id]).map(w => tagById[w.tag_id].name))];
+}
+async function refreshAlarms() {
+  try {
+    const r = await fetch(ALARMS_URL);
+    if (!r.ok) return;
+    const data = await r.json();
+    const box = document.getElementById('alarms');
+    if (data.alarms && data.alarms.length) {
+      box.className = 'show';
+      box.innerHTML = '⚠ ' + data.alarms.map(a => String(a)).join('<br>⚠ ');
+    } else { box.className = ''; box.innerHTML = ''; }
+  } catch (e) {}
+}
+document.getElementById('btn-preview').onclick = e => {
+  preview = !preview;
+  e.target.textContent = preview ? '■ Stop Preview' : '▶ Preview';
+  renderPalette();
+  if (preview) {
+    liveVals = {};
+    ws = new WebSocket(WS_URL);
+    ws.onopen = () => { ws.send(JSON.stringify({subscribe: tagNames()})); setStatus('live: ' + WS_URL); };
+    ws.onmessage = ev => { Object.assign(liveVals, JSON.parse(ev.data)); renderCanvas(); };
+    ws.onclose = () => setStatus('preview закрыт');
+    refreshAlarms(); alarmTimer = setInterval(refreshAlarms, 5000);
+  } else {
+    if (ws) { ws.close(); ws = null; }
+    if (alarmTimer) { clearInterval(alarmTimer); alarmTimer = null; }
+    document.getElementById('alarms').className = '';
+    setStatus('редактирование');
+  }
+};
+
+// Save с защитой от конфликта: шлём updated_at, при 409 — предупреждение
+document.getElementById('btn-save').onclick = async () => {
+  try {
+    const res = await api(`/api/screens/${SCREEN_ID}/`, {method: 'PATCH',
+      body: JSON.stringify({widgets: screen.widgets, width: screen.width, height: screen.height, updated_at: screen.updated_at})});
+    screen = res; selected = [];
+    setStatus('Saved ' + new Date().toLocaleTimeString()); renderCanvas(); renderProps();
+  } catch (err) {
+    if (err.status === 409) {
+      const ok = confirm('Экран изменил кто-то другой. Перезаписать его версию вашей? OK — перезаписать, Отмена — загрузить чужую.');
+      if (ok) {
+        const fresh = await api(`/api/screens/${SCREEN_ID}/`);
+        screen.updated_at = fresh.updated_at;
+        document.getElementById('btn-save').click();
+      } else {
+        screen = err.body.current; selected = [];
+        renderCanvas(); renderProps(); setStatus('Загружена чужая версия');
+      }
+    } else setStatus('Save failed: ' + err.message);
+  }
+};
+document.getElementById('btn-del').onclick = () => {
+  if (preview || !selected.length) return;
+  snapshot();
+  screen.widgets = screen.widgets.filter(w => !selected.includes(w.id));
+  selected = []; renderCanvas(); renderProps();
+};
+document.getElementById('btn-undo').onclick = doUndo;
+document.getElementById('btn-redo').onclick = doRedo;
+window.onkeydown = e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); doUndo(); }
+  else if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) { e.preventDefault(); doRedo(); }
+  else if ((e.key === 'Delete' || e.key === 'Backspace') && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'SELECT') {
+    document.getElementById('btn-del').click();
+  }
+};
+function setStatus(s) { document.getElementById('status').textContent = s; }
+document.getElementById('canvas').onclick = () => { if (!preview) { selected = []; renderCanvas(); renderProps(); } };
+load().catch(e => setStatus('Load failed: ' + e.message + (e.status === 403 ? ' (нужен is_staff)' : '')));
+</script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 import json
 
 from django.contrib.auth.decorators import login_required
+from django.core.exceptions import PermissionDenied
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.views.decorators.csrf import csrf_exempt
@@ -53,6 +54,33 @@ def dashboard(request, screen_id):
     return render(request, "scada/dashboard.html", {"screen": screen})
 
 
+@login_required
+def constructor_editor(request, screen_id):
+    """Редактор мнемосхемы (Вариант А): Django-шаблон + API.
+
+    Просмотр runtime — любой залогиненный (dashboard); редактирование —
+    только staff (is_staff). Остальные получают 403.
+    """
+    if not request.user.is_staff:
+        raise PermissionDenied("Редактирование экранов доступно персоналу (is_staff).")
+    screen = get_object_or_404(Screen, pk=screen_id)
+    return render(request, "scada/constructor.html", {"screen": screen})
+
+
+def _can_edit(user):
+    """Кто может редактировать экраны: персонал. Остальные — только просмотр."""
+    return bool(user and user.is_active and user.is_staff)
+
+
+def _num_or_none(v):
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return "invalid"
+
+
 def _screen_to_dict(screen):
     return {
         "id": screen.id,
@@ -92,7 +120,12 @@ def _validate_widgets(widgets):
             "label": w.get("label", ""),
             "rotation": w.get("rotation", 0),
             "tag_id": tag_id, "device_id": dev_id,
+            "warn_above": _num_or_none(w.get("warn_above")),
+            "alarm_above": _num_or_none(w.get("alarm_above")),
         })
+    for w in cleaned:
+        if w["warn_above"] == "invalid" or w["alarm_above"] == "invalid":
+            return None, "warn_above/alarm_above must be numbers"
     return cleaned, None
 
 
@@ -106,11 +139,14 @@ def _parse_json_body(request):
 @csrf_exempt
 @api_auth_required
 def api_screens(request):
-    """GET /api/screens/ — список; POST /api/screens/ — создание."""
+    """GET /api/screens/ — список (все аутентифицированные);
+    POST /api/screens/ — создание (только staff, иначе 403)."""
     if request.method == "GET":
         screens = Screen.objects.all().order_by("id")
         return JsonResponse([_screen_to_dict(s) for s in screens], safe=False)
     if request.method == "POST":
+        if not _can_edit(request.api_user):
+            return JsonResponse({"detail": "Editing screens requires staff."}, status=403)
         data, err = _parse_json_body(request)
         if err:
             return JsonResponse({"detail": err}, status=400)
@@ -130,14 +166,23 @@ def api_screens(request):
 @csrf_exempt
 @api_auth_required
 def api_screen_detail(request, screen_id):
-    """GET /api/screens/<id>/; PATCH — частичное обновление (имя/размер/widgets)."""
+    """GET — просмотр (все аутентифицированные);
+    PATCH/PUT — только staff; при конфликте одновременного редактирования
+    (поле updated_at не совпало) — 409 с текущей версией."""
     screen = get_object_or_404(Screen, pk=screen_id)
     if request.method == "GET":
         return JsonResponse(_screen_to_dict(screen))
     if request.method in ("PATCH", "PUT"):
+        if not _can_edit(request.api_user):
+            return JsonResponse({"detail": "Editing screens requires staff."}, status=403)
         data, err = _parse_json_body(request)
         if err:
             return JsonResponse({"detail": err}, status=400)
+        base = data.get("updated_at")
+        if base and base != (screen.updated_at.isoformat() if screen.updated_at else None):
+            return JsonResponse(
+                {"detail": "Conflict: screen was modified by someone else.",
+                 "current": _screen_to_dict(screen)}, status=409)
         if "name" in data:
             screen.name = str(data["name"])[:100]
         if "width" in data:
