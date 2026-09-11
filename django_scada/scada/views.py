@@ -48,6 +48,13 @@ def api_screen_widgets(request, screen_id):
 
 
 @login_required
+def screens_list(request):
+    """GET /screens/ — список экранов со ссылками на дашборд/конструктор."""
+    screens = Screen.objects.all().order_by("id")
+    return render(request, "scada/screens_list.html", {"screens": screens})
+
+
+@login_required
 def dashboard(request, screen_id):
     """Простой HTML-дашборд: grid по row/col + WS к FastAPI."""
     screen = get_object_or_404(Screen, pk=screen_id)
