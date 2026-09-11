@@ -14,7 +14,7 @@ class DeviceAdmin(admin.ModelAdmin):
     inlines = [TagInline]
 
 class ScreenAdmin(admin.ModelAdmin):
-    list_display = ('name',)
+    list_display = ('name', 'width', 'height', 'updated_at')
     inlines = [WidgetInline]
 
 admin.site.register(Device, DeviceAdmin)

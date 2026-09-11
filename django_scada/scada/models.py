@@ -1,5 +1,6 @@
 
 from django.db import models
+from django.utils import timezone
 
 class Device(models.Model):
     name = models.CharField(max_length=100, verbose_name="Название")
@@ -20,11 +21,23 @@ class Rule(models.Model):
 
 class Screen(models.Model):
     name = models.CharField(max_length=100)
-    layout = models.JSONField(default=dict, verbose_name="JSON layout конструктора")
+    layout = models.JSONField(default=dict, verbose_name="JSON layout конструктора (legacy)")
+    width = models.IntegerField(default=900, verbose_name="Ширина канваса")
+    height = models.IntegerField(default=600, verbose_name="Высота канваса")
+    # Виджеты конструктора (формат прототипа): [{id, type, x, y, w, h,
+    # color, label, rotation, tag_id, device_id}, ...]. tag_id/device_id
+    # могут быть None (непривязанный виджет, напр. label/труба).
+    widgets = models.JSONField(default=list, verbose_name="Виджеты (JSON)")
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(default=timezone.now)
+
+    def save(self, *args, **kwargs):
+        self.updated_at = timezone.now()
+        super().save(*args, **kwargs)
 
 class Widget(models.Model):
     WIDGET_TYPES = [('number', 'Число'), ('chart', 'График'), ('indicator', 'Индикатор')]
-    screen = models.ForeignKey(Screen, on_delete=models.CASCADE, related_name='widgets')
+    screen = models.ForeignKey(Screen, on_delete=models.CASCADE, related_name='legacy_widgets')
     tag = models.ForeignKey(Tag, on_delete=models.CASCADE)
     widget_type = models.CharField(max_length=20, choices=WIDGET_TYPES, default='number')
     row = models.IntegerField(default=0)
