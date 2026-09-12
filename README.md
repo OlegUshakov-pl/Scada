@@ -476,3 +476,5 @@ FastAPI: `POST /ingest {"tag": ..., "value": ...}` пишет в `latest_tags`
 - `scale` в `Tag` + третья колонка конфига C3-драйвера
 - Запись команд C3-драйвером обратно в ПЛК (`HGET commands` → `modbus_write_register`)
 - Тесты Django на API/авторизацию (`TestCase`) и CI (тесты генераторов эмулятора уже есть: `test emulator`)
+=======
+# Scada
