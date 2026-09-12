@@ -21,7 +21,7 @@ class Rule(models.Model):
 
 class Screen(models.Model):
     name = models.CharField(max_length=100)
-    layout = models.JSONField(default=dict, verbose_name="JSON layout конструктора (legacy)")
+    layout = models.JSONField(default=dict, blank=True, verbose_name="JSON layout конструктора (legacy)")
     width = models.IntegerField(default=900, verbose_name="Ширина канваса")
     height = models.IntegerField(default=600, verbose_name="Высота канваса")
     # Виджеты конструктора (формат прототипа): [{id, type, x, y, w, h,
