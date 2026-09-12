@@ -10,7 +10,7 @@
   #wrap { display: flex; height: calc(100vh - 53px); }
   #palette { width: 150px; background: #161617; border-right: 1px solid #333; padding: 10px; overflow-y: auto; }
   #palette .item { background: #26262a; border: 1px solid #444; border-radius: 6px; padding: 8px; margin-bottom: 8px; cursor: grab; text-align: center; font-size: 13px; }
-  #canvas { flex: 1; position: relative; overflow: auto;
+  #canvas { flex: 1; position: relative; overflow: auto; width: 900px; height: 600px;
     background-image: radial-gradient(#333 1.2px, transparent 1.2px); background-size: 20px 20px; }
   #props { width: 250px; background: #161617; border-left: 1px solid #333; padding: 12px; overflow-y: auto; font-size: 13px; }
   #props label { display: block; margin: 8px 0 2px; color: #aaa; }
@@ -19,7 +19,7 @@
   .w.sel { outline: 2px solid #f59e0b; }
   .w .val { position: absolute; bottom: -18px; font-size: 11px; background: #000; padding: 0 4px; border-radius: 3px; white-space: nowrap; }
   #json { background: #000; color: #8f8; font-size: 11px; padding: 8px; max-height: 180px; overflow: auto; white-space: pre-wrap; }
-  #status { font-size: 12px; color: #888; margin-left: auto; }
+  #status { font-size: 12px; color: #f59e0b; margin-left: auto; }
   #alarms { display: none; background: #7f1d1d; color: #fecaca; font-size: 13px; padding: 6px 16px; max-height: 90px; overflow-y: auto; }
   #alarms.show { display: block; }
 </style>
@@ -33,7 +33,7 @@
   <button id="btn-undo" title="Ctrl+Z">↩ Undo</button>
   <button id="btn-redo" title="Ctrl+Y">↪ Redo</button>
   <button id="btn-del">Delete</button>
-  <span id="status"></span>
+  <span id="status">редактирование</span>
 </header>
 <div id="alarms"></div>
 <div id="wrap">
@@ -43,8 +43,6 @@
 </div>
 <pre id="json"></pre>
 <script>
-// Библиотека символов: чтобы добавить новый тип, достаточно дописать запись
-// {w, h, label} — код палитры/канваса подхватит автоматически.
 const TYPES = {
   pump:   {w: 56, h: 56, label: 'Н'}, valve: {w: 56, h: 56, label: 'К'},
   tank:   {w: 140, h: 180, label: 'Бак'}, motor: {w: 56, h: 56, label: 'M'},
@@ -55,11 +53,11 @@ const TYPES = {
 };
 const SCREEN_ID = {{ screen.id }};
 const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.hostname + ':9000/ws/live';
-const ALARMS_URL = '/api/alarms?limit=5';  // same origin: Django проксирует FastAPI, CORS не нужен
+const ALARMS_URL = '/api/alarms?limit=5';
 let screen = {name: '', width: 900, height: 600, widgets: [], updated_at: null};
 let tags = [];
 let tagById = {};
-let selected = [];   // мультивыбор: массив id
+let selected = [];
 let undoStack = [], redoStack = [];
 let preview = false, ws = null, liveVals = {}, alarmTimer = null;
 
@@ -68,17 +66,23 @@ function csrf() {
   return m ? m[1] : '';
 }
 async function api(path, opts = {}) {
-  const r = await fetch(path, {...opts, headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf(), ...(opts.headers || {})}});
+  // FIX: credentials same-origin обязательно, иначе сессия не улетает
+  const r = await fetch(path, {
+    credentials: 'same-origin',
+    ...opts,
+    headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf(), ...(opts.headers || {})}
+  });
   if (!r.ok) {
     let body = null;
-    try { body = await r.json(); } catch (e) {}
+    try { body = await r.json(); } catch (e) { try { body = {detail: await r.text()} } catch {} }
     const err = new Error(path + ' -> ' + r.status + (body && body.detail ? ': ' + body.detail : ''));
     err.status = r.status; err.body = body;
     throw err;
   }
+  // 204 No Content
+  if (r.status === 204) return null;
   return r.json();
 }
-// Снимок для undo: вызывать ПЕРЕД мутацией widgets
 function snapshot() {
   undoStack.push(JSON.stringify(screen.widgets));
   if (undoStack.length > 50) undoStack.shift();
@@ -97,18 +101,24 @@ function doRedo() {
   selected = []; renderCanvas(); renderProps();
 }
 
-// --- загрузка: список экранов для навигации + текущий экран + тэги ---
 async function load() {
-  const [screens, tagsResp, scr] = await Promise.all([
-    api('/api/screens/'), api('/api/tags/'), api(`/api/screens/${SCREEN_ID}/`),
-  ]);
-  tags = tagsResp;
-  tagById = Object.fromEntries(tags.map(t => [t.id, t]));
-  screen = scr;
-  const sel = document.getElementById('screen-sel');
-  sel.innerHTML = screens.map(s => `<option value="${s.id}" ${s.id === SCREEN_ID ? 'selected' : ''}>${s.name}</option>`).join('');
-  sel.onchange = e => { location.href = `/screens/${e.target.value}/edit/`; };
-  renderPalette(); renderCanvas(); renderProps();
+  try {
+    const [screens, tagsResp, scr] = await Promise.all([
+      api('/api/screens/'), api('/api/tags/'), api(`/api/screens/${SCREEN_ID}/`),
+    ]);
+    tags = tagsResp;
+    tagById = Object.fromEntries(tags.map(t => [t.id, t]));
+    screen = scr;
+    const sel = document.getElementById('screen-sel');
+    sel.innerHTML = screens.map(s => `<option value="${s.id}" ${s.id === SCREEN_ID ? 'selected' : ''}>${s.name}</option>`).join('');
+    sel.onchange = e => { location.href = `/screens/${e.target.value}/edit/`; };
+    document.getElementById('meta').textContent = `${screen.width||900}x${screen.height||600} • ${screen.widgets.length} widgets`;
+    renderPalette(); renderCanvas(); renderProps();
+    setStatus('Загружено: ' + screen.name);
+  } catch(e) {
+    setStatus('Load failed: ' + e.message + (e.status === 403 ? ' (нужен is_staff)' : ''));
+    console.error(e);
+  }
 }
 
 function renderPalette() {
@@ -121,87 +131,83 @@ function renderPalette() {
     p.appendChild(d);
   });
 }
-
-// Условное форматирование: цвет по порогам warn_above/alarm_above
 function statusColor(w, val) {
   const v = Number(val);
   if (val === undefined || val === null || Number.isNaN(v)) return w.color;
-  if (w.alarm_above !== null && w.alarm_above !== undefined && v >= w.alarm_above) return '#ef4444';
-  if (w.warn_above !== null && w.warn_above !== undefined && v >= w.warn_above) return '#f59e0b';
+  if (w.alarm_above !== null && w.alarm_above !== undefined && w.alarm_above !== '' && v >= w.alarm_above) return '#ef4444';
+  if (w.warn_above !== null && w.warn_above !== undefined && w.warn_above !== '' && v >= w.warn_above) return '#f59e0b';
   if (w.type === 'pump' || w.type === 'motor' || w.type === 'fan') return v ? '#22c55e' : '#ef4444';
   return w.color;
 }
-
 function renderCanvas() {
   const c = document.getElementById('canvas');
   c.innerHTML = '';
-  c.style.minWidth = screen.width + 'px'; c.style.minHeight = screen.height + 'px';
+  c.style.width = (screen.width||900)+'px';
+  c.style.height = (screen.height||600)+'px';
   screen.widgets.forEach(w => {
-    const tname = w.tag_id ? tagById[w.tag_id]?.name : null;
-    const val = tname ? liveVals[tname] : undefined;
-    const border = preview ? statusColor(w, val) : w.color;
-    const el = document.createElement('div');
-    el.className = 'w' + (selected.includes(w.id) ? ' sel' : '');
-    el.style.cssText = `left:${w.x}px;top:${w.y}px;width:${w.w}px;height:${w.h}px;transform:rotate(${w.rotation || 0}deg);border-color:${border}`;
-    el.innerHTML = `<span>${w.label || w.type}</span>` +
-      (preview && val !== undefined ? `<span class="val">${val}</span>` : '');
-    el.onclick = e => {
+    const d = document.createElement('div');
+    d.className = 'w' + (selected.includes(w.id) ? ' sel' : '');
+    d.style.left = w.x+'px'; d.style.top = w.y+'px';
+    d.style.width = w.w+'px'; d.style.height = w.h+'px';
+    d.style.borderColor = statusColor(w, w.tag_id ? liveVals[tagById[w.tag_id]?.name] : null);
+    if (w.rotation) d.style.transform = `rotate(${w.rotation}deg)`;
+    d.textContent = w.label || w.type;
+    d.dataset.id = w.id;
+    d.onclick = (e) => {
       e.stopPropagation();
       if (preview) return;
       if (e.shiftKey) {
-        selected = selected.includes(w.id) ? selected.filter(id => id !== w.id) : [...selected, w.id];
+        if (selected.includes(w.id)) selected = selected.filter(id=>id!==w.id);
+        else selected.push(w.id);
       } else {
         selected = [w.id];
       }
       renderCanvas(); renderProps();
     };
-    el.onpointerdown = e => { if (preview || e.button !== 0) return; dragWidget(e, w); };
-    c.appendChild(el);
+    // drag
+    let sx, sy, ox, oy;
+    d.onmousedown = (e) => {
+      if (preview) return;
+      if (!selected.includes(w.id) && !e.shiftKey) { selected = [w.id]; renderProps(); }
+      snapshot();
+      sx = e.clientX; sy = e.clientY; ox = w.x; oy = w.y;
+      const onMove = (ev) => {
+        const dx = ev.clientX - sx, dy = ev.clientY - sy;
+        const ids = selected.includes(w.id) ? selected : [w.id];
+        ids.forEach(id => {
+          const ww = screen.widgets.find(x=>x.id===id);
+          if (!ww) return;
+          if (id === w.id) { ww.x = ox + dx; ww.y = oy + dy; }
+          else { // групповое перетаскивание относительно
+            // для простоты сдвигаем всех на ту же дельту
+            ww.x += dx - (ww._lastDx||0);
+            ww.y += dy - (ww._lastDy||0);
+            ww._lastDx = dx; ww._lastDy = dy;
+          }
+        });
+        screen.widgets.forEach(ww=>{ delete ww._lastDx; delete ww._lastDy; });
+        renderCanvas();
+      };
+      const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); renderProps(); };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    };
+    c.appendChild(d);
   });
-  document.getElementById('json').textContent = JSON.stringify({screen: screen.name, widgets: screen.widgets, version: 1}, null, 1);
-  document.getElementById('meta').textContent = `${screen.width}×${screen.height} • ${screen.widgets.length} widgets` +
-    (selected.length > 1 ? ` • выбрано: ${selected.length}` : '');
-}
-
-// Групповое перетаскивание всех выбранных
-function dragWidget(e, w) {
-  e.preventDefault();
-  if (!selected.includes(w.id)) selected = [w.id];
-  const group = screen.widgets.filter(v => selected.includes(v.id));
-  const startPos = new Map(group.map(v => [v.id, {x: v.x, y: v.y}]));
-  const ox = e.clientX, oy = e.clientY;
-  let moved = false;
-  const move = ev => {
-    const dx = Math.round(ev.clientX - ox), dy = Math.round(ev.clientY - oy);
-    if (dx || dy) moved = true;
-    group.forEach(v => { const s = startPos.get(v.id); v.x = s.x + dx; v.y = s.y + dy; });
-    renderCanvas();
-  };
-  const up = () => {
-    window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
-    if (!moved) undoStack.pop();  // клик без движения — не история
-    renderProps();
-  };
-  snapshot();
-  window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  document.getElementById('meta').textContent = `${screen.width||900}x${screen.height||600} • ${screen.widgets.length} widgets`;
+  document.getElementById('json').textContent = JSON.stringify(screen.widgets, null, 2);
 }
 
 function renderProps() {
   const p = document.getElementById('props');
-  const ws_ = screen.widgets.filter(v => selected.includes(v.id));
-  if (!ws_.length) { p.innerHTML = '<i>Выберите виджет (Shift+клик — несколько)</i>'; return; }
-  if (ws_.length > 1) {
-    p.innerHTML = `<b>Групповые операции</b><div>Выбрано: ${ws_.length}</div>
-      <div style="color:#aaa;margin-top:6px">Перетаскивание двигает все. Delete удаляет все. Пороги и привязки — по одному.</div>`;
-    return;
-  }
-  const w = ws_[0];
-  const tagOpts = `<option value="">— без привязки —</option>` + tags.map(t =>
-    `<option value="${t.id}" ${w.tag_id === t.id ? 'selected' : ''}>${t.device} / ${t.name}</option>`).join('');
+  if (!selected.length) { p.innerHTML = '<i>Выберите виджет (Shift+клик — несколько)</i>'; return; }
+  const w = screen.widgets.find(x=>x.id===selected[0]);
+  if (!w) { p.innerHTML = ''; return; }
+  const tagOptions = ['<option value="">— без привязки —</option>'].concat(tags.map(t=>`<option value="${t.id}" ${w.tag_id===t.id?'selected':''}>${t.name} (${t.device_name||''})</option>`)).join('');
   p.innerHTML = `
-    <label>Тип</label><div>${w.type}</div>
-    <label>Тэг (реальный)</label><select id="f-tag">${tagOpts}</select>
-    <label>Label</label><input id="f-label" value="${w.label || ''}">
+    <div>Тип<br><b>${w.type}</b></div>
+    <label>Тэг (реальный)</label><select id="f-tag">${tagOptions}</select>
+    <label>Label</label><input id="f-label" value="${w.label||''}">
     <label>Цвет (норма)</label><input id="f-color" type="color" value="${w.color || '#888888'}">
     <label>Warn above (предупреждение)</label><input id="f-warn" type="number" step="any" value="${w.warn_above ?? ''}">
     <label>Alarm above (авария)</label><input id="f-alarm" type="number" step="any" value="${w.alarm_above ?? ''}">
@@ -217,8 +223,8 @@ function renderProps() {
     w.tag_id = id; w.device_id = id ? tagById[id].device_id : null;
     renderCanvas();
   };
-  const bind = (id, fn) => document.getElementById(id).oninput = e => { fn(e.target.value); renderCanvas(); };
-  const bindSnap = (id, fn) => document.getElementById(id).onchange = e => { snapshot(); fn(e.target.value); renderCanvas(); };
+  const bind = (id, fn) => { const el=document.getElementById(id); if(el) el.oninput = e => { fn(e.target.value); renderCanvas(); }; };
+  const bindSnap = (id, fn) => { const el=document.getElementById(id); if(el) el.onchange = e => { snapshot(); fn(e.target.value); renderCanvas(); }; };
   bind('f-label', v => w.label = v); bind('f-color', v => w.color = v);
   bindSnap('f-warn', v => w.warn_above = v === '' ? null : Number(v));
   bindSnap('f-alarm', v => w.alarm_above = v === '' ? null : Number(v));
@@ -248,7 +254,7 @@ function tagNames() {
 }
 async function refreshAlarms() {
   try {
-    const r = await fetch(ALARMS_URL);
+    const r = await fetch(ALARMS_URL, {credentials: 'same-origin'});
     if (!r.ok) return;
     const data = await r.json();
     const box = document.getElementById('alarms');
@@ -273,48 +279,45 @@ document.getElementById('btn-preview').onclick = e => {
     setStatus('редактирование');
   }
 };
-// Подключение с автопереподключением: FastAPI может быть недоступен
-// (не запущен, порт не проброшен) — показываем это в статусе, а не молчим.
 function connectPreview() {
   if (!preview) return;
   let opened = false;
-  try {
-    ws = new WebSocket(WS_URL);
-  } catch (err) {
-    setStatus('WS недоступен: ' + WS_URL + ' — проверь, что FastAPI запущен');
-    setTimeout(connectPreview, 2000);
-    return;
-  }
+  try { ws = new WebSocket(WS_URL); }
+  catch (err) { setStatus('WS недоступен: ' + WS_URL); setTimeout(connectPreview, 2000); return; }
   setStatus('подключение к ' + WS_URL + '...');
   ws.onopen = () => { opened = true; ws.send(JSON.stringify({subscribe: tagNames()})); setStatus('live: ' + WS_URL); };
-  ws.onmessage = ev => { Object.assign(liveVals, JSON.parse(ev.data)); renderCanvas(); };
-  ws.onerror = () => { if (!opened) setStatus('WS недоступен: ' + WS_URL + ' — проверь, что FastAPI запущен на :9000'); };
-  ws.onclose = () => {
-    if (!preview) return;
-    setStatus('WS закрыт, переподключение...');
-    setTimeout(connectPreview, 2000);
-  };
+  ws.onmessage = ev => { try { Object.assign(liveVals, JSON.parse(ev.data)); renderCanvas(); } catch {} };
+  ws.onerror = () => { if (!opened) setStatus('WS недоступен: ' + WS_URL); };
+  ws.onclose = () => { if (!preview) return; setStatus('WS закрыт, переподключение...'); setTimeout(connectPreview, 2000); };
 }
 
-// Save с защитой от конфликта: шлём updated_at, при 409 — предупреждение
 document.getElementById('btn-save').onclick = async () => {
+  console.log('Save clicked', screen.widgets.length, 'widgets');
+  setStatus('Сохранение...');
   try {
     const res = await api(`/api/screens/${SCREEN_ID}/`, {method: 'PATCH',
       body: JSON.stringify({widgets: screen.widgets, width: screen.width, height: screen.height, updated_at: screen.updated_at})});
     screen = res; selected = [];
-    setStatus('Saved ' + new Date().toLocaleTimeString()); renderCanvas(); renderProps();
+    setStatus('Saved ' + new Date().toLocaleTimeString());
+    renderCanvas(); renderProps();
   } catch (err) {
+    console.error('Save error', err);
     if (err.status === 409) {
-      const ok = confirm('Экран изменил кто-то другой. Перезаписать его версию вашей? OK — перезаписать, Отмена — загрузить чужую.');
+      const ok = confirm('Экран изменил кто-то другой. Перезаписать? OK — перезаписать, Отмена — загрузить чужую.');
       if (ok) {
-        const fresh = await api(`/api/screens/${SCREEN_ID}/`);
-        screen.updated_at = fresh.updated_at;
-        document.getElementById('btn-save').click();
+        try {
+          const fresh = await api(`/api/screens/${SCREEN_ID}/`);
+          screen.updated_at = fresh.updated_at;
+          document.getElementById('btn-save').click();
+        } catch(e) { setStatus('Ошибка получения свежей версии: '+e.message); }
       } else {
         screen = err.body.current; selected = [];
         renderCanvas(); renderProps(); setStatus('Загружена чужая версия');
       }
-    } else setStatus('Save failed: ' + err.message);
+    } else {
+      setStatus('Save failed: ' + err.message + (err.status ? ' ['+err.status+']' : ''));
+      alert('Save failed: ' + err.message);
+    }
   }
 };
 document.getElementById('btn-del').onclick = () => {
@@ -332,9 +335,9 @@ window.onkeydown = e => {
     document.getElementById('btn-del').click();
   }
 };
-function setStatus(s) { document.getElementById('status').textContent = s; }
+function setStatus(s) { document.getElementById('status').textContent = s; console.log('[status]', s); }
 document.getElementById('canvas').onclick = () => { if (!preview) { selected = []; renderCanvas(); renderProps(); } };
-load().catch(e => setStatus('Load failed: ' + e.message + (e.status === 403 ? ' (нужен is_staff)' : '')));
+load();
 </script>
 </body>
 </html>
