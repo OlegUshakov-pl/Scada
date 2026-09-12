@@ -264,18 +264,37 @@ document.getElementById('btn-preview').onclick = e => {
   renderPalette();
   if (preview) {
     liveVals = {};
-    ws = new WebSocket(WS_URL);
-    ws.onopen = () => { ws.send(JSON.stringify({subscribe: tagNames()})); setStatus('live: ' + WS_URL); };
-    ws.onmessage = ev => { Object.assign(liveVals, JSON.parse(ev.data)); renderCanvas(); };
-    ws.onclose = () => setStatus('preview закрыт');
+    connectPreview();
     refreshAlarms(); alarmTimer = setInterval(refreshAlarms, 5000);
   } else {
-    if (ws) { ws.close(); ws = null; }
+    if (ws) { ws.onclose = null; ws.close(); ws = null; }
     if (alarmTimer) { clearInterval(alarmTimer); alarmTimer = null; }
     document.getElementById('alarms').className = '';
     setStatus('редактирование');
   }
 };
+// Подключение с автопереподключением: FastAPI может быть недоступен
+// (не запущен, порт не проброшен) — показываем это в статусе, а не молчим.
+function connectPreview() {
+  if (!preview) return;
+  let opened = false;
+  try {
+    ws = new WebSocket(WS_URL);
+  } catch (err) {
+    setStatus('WS недоступен: ' + WS_URL + ' — проверь, что FastAPI запущен');
+    setTimeout(connectPreview, 2000);
+    return;
+  }
+  setStatus('подключение к ' + WS_URL + '...');
+  ws.onopen = () => { opened = true; ws.send(JSON.stringify({subscribe: tagNames()})); setStatus('live: ' + WS_URL); };
+  ws.onmessage = ev => { Object.assign(liveVals, JSON.parse(ev.data)); renderCanvas(); };
+  ws.onerror = () => { if (!opened) setStatus('WS недоступен: ' + WS_URL + ' — проверь, что FastAPI запущен на :9000'); };
+  ws.onclose = () => {
+    if (!preview) return;
+    setStatus('WS закрыт, переподключение...');
+    setTimeout(connectPreview, 2000);
+  };
+}
 
 // Save с защитой от конфликта: шлём updated_at, при 409 — предупреждение
 document.getElementById('btn-save').onclick = async () => {
