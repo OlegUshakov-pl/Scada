@@ -17,14 +17,24 @@ from contextlib import suppress
 
 import redis
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 POLL_INTERVAL = float(os.getenv("WS_POLL_SEC", "0.5"))
+# Телеметрия открыта (как и WS без авторизации), поэтому разрешаем
+# кросс-доменные запросы с любого origin — в т.ч. со страницы Django на :8000.
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 
 r = redis.Redis(host=REDIS_HOST, decode_responses=True)
 
 app = FastAPI(title="SCADA Realtime")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 
 latest = defaultdict(float)
 

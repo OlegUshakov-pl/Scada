@@ -204,6 +204,7 @@ FASTAPI_URL=http://localhost:9000 REDIS_HOST=localhost python manage.py run_simu
 | Метод | URL | Ответ |
 |---|---|---|
 | `GET` | `/api/rules/` | активные правила: `[{"name","condition","action"}, ...]` |
+| `GET` | `/api/alarms/` (`?limit=`) | прокси к FastAPI — последние аварии (same origin, без CORS); FastAPI недоступен — `{"alarms": []}` |
 | `GET` | `/api/devices/` | устройства для панели свойств конструктора |
 | `GET` | `/api/tags/` (`?device_id=`) | тэги для панели свойств: `[{"id","device_id","device","name","address","unit"}]` |
 | `GET` | `/api/devices/<id>/tags/` | карта регистров: `[{"name","address","unit"}, ...]` по возрастанию адреса |
@@ -402,7 +403,9 @@ motor, pipe-h/v, label, indicator, number, lamp, fan`; новый тип — о�
 перетаскиванием/удалением, undo/redo (до 50 шагов, Ctrl+Z/Ctrl+Y),
 условное форматирование (`warn_above`/`alarm_above` — рамка янтарь/красная;
 насосы/моторы — зелёный/красный по вкл/выкл), dropdown-навигация между экранами,
-alarm-баннер в Preview (`GET :9000/alarms`), Save — `PATCH /api/screens/<id>/`
+alarm-баннер в Preview (`GET /api/alarms` — Django-прокси к FastAPI,
+чтобы браузер не упирался в CORS; напрямую у FastAPI CORS тоже открыт:
+`ALLOWED_ORIGINS`, по умолчанию `*`), Save — `PATCH /api/screens/<id>/`
 с защитой от конфликта (409), живой JSON модели внизу.
 
 ## Дашборд

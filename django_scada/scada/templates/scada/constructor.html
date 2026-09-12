@@ -55,7 +55,7 @@ const TYPES = {
 };
 const SCREEN_ID = {{ screen.id }};
 const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.hostname + ':9000/ws/live';
-const ALARMS_URL = (location.protocol === 'https:' ? 'https://' : 'http://') + location.hostname + ':9000/alarms?limit=5';
+const ALARMS_URL = '/api/alarms?limit=5';  // same origin: Django проксирует FastAPI, CORS не нужен
 let screen = {name: '', width: 900, height: 600, widgets: [], updated_at: null};
 let tags = [];
 let tagById = {};

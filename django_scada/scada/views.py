@@ -1,5 +1,7 @@
 import json
+import os
 
+import requests
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.http import JsonResponse
@@ -8,6 +10,8 @@ from django.views.decorators.csrf import csrf_exempt
 
 from .auth import api_auth_required
 from .models import Device, Rule, Screen, Tag
+
+FASTAPI_URL = os.getenv("FASTAPI_URL", "http://localhost:9000")
 
 
 @api_auth_required
@@ -211,6 +215,25 @@ def api_devices(request):
     """GET /api/devices/ — устройства для панели свойств конструктора."""
     devices = Device.objects.all().order_by("id").values("id", "name", "ip", "protocol")
     return JsonResponse(list(devices), safe=False)
+
+
+@login_required
+def api_alarms(request):
+    """GET /api/alarms/?limit= — прокси к FastAPI, чтобы фронт не упирался в CORS.
+
+    Редактор на :8000 ходит сюда (same origin), а Django уже сервер-сервер
+    забирает данные с FastAPI (:9000). FastAPI недоступен — пустой список.
+    """
+    try:
+        limit = max(1, min(int(request.GET.get("limit", 5)), 100))
+    except (TypeError, ValueError):
+        limit = 5
+    try:
+        resp = requests.get(f"{FASTAPI_URL}/alarms", params={"limit": limit}, timeout=3)
+        resp.raise_for_status()
+        return JsonResponse(resp.json())
+    except requests.RequestException:
+        return JsonResponse({"alarms": []})
 
 
 @api_auth_required
