@@ -1,4 +1,4 @@
-# My SCADA — Django + FastAPI + C3 + Logic Engine + Emulator
+# SCADA — Django + FastAPI + C3 + Logic Engine + Emulator
 
 Configurable SCADA constructor: devices, tags, rules, and dashboards are defined
 through the Django admin **without editing service code**. Python 3.14.
