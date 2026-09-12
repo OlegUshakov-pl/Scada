@@ -60,9 +60,18 @@ def screens_list(request):
 
 @login_required
 def dashboard(request, screen_id):
-    """Простой HTML-дашборд: grid по row/col + WS к FastAPI."""
+    """Дашборд: legacy-виджеты (grid row/col) + виджеты конструктора
+    (Screen.widgets JSON, абсолютные x/y). Маппинг tag_id->name/unit
+    отдаём в контекст, live-значения фронт берёт по WS /ws/live."""
     screen = get_object_or_404(Screen, pk=screen_id)
-    return render(request, "scada/dashboard.html", {"screen": screen})
+    tags = Tag.objects.select_related("device").filter(
+        pk__in=[w.get("tag_id") for w in (screen.widgets or []) if w.get("tag_id")])
+    tagmap = {t.id: {"name": t.name, "unit": t.unit} for t in tags}
+    return render(request, "scada/dashboard.html", {
+        "screen": screen,
+        "widgets_json": json.dumps(screen.widgets or []),
+        "tagmap_json": json.dumps(tagmap),
+    })
 
 
 @login_required

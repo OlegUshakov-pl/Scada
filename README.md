@@ -410,7 +410,11 @@ alarm-баннер в Preview (`GET /api/alarms` — Django-прокси к Fast
 
 ## Дашборд
 
-`GET /screens/<id>/` — чистый HTML+JS без фреймворков (`scada/templates/scada/dashboard.html`):
+`GET /screens/<id>/` — чистый HTML+JS без фреймворков (`scada/templates/scada/dashboard.html`),
+показывает оба формата: виджеты конструктора (`Screen.widgets`, абсолютные `x/y`
+на канвасе `width×height`, live-значения и пороговые цвета по WS) и ниже —
+legacy grid по `row`/`col` (обновляется каждые 30 с из API). Ссылка
+«→ открыть в конструкторе» ведёт на `/screens/<id>/edit/`:
 
 - раскладка — CSS-grid по `row`/`col` виджетов (обновляется каждые 30 с из API);
 - live-данные — WebSocket `ws://<host>:9000/ws/live`: при коннекте один полный

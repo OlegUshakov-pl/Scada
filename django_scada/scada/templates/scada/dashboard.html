@@ -8,6 +8,13 @@
   h1 { font-size: 20px; }
   #status { font-size: 13px; color: #888; }
   #grid { display: grid; gap: 12px; margin-top: 16px; }
+  #canvas { position: relative; margin-top: 16px; overflow: auto;
+    background-image: radial-gradient(#2a2a2a 1.2px, transparent 1.2px); background-size: 20px 20px;
+    border: 1px solid #333; border-radius: 8px; }
+  .cw { position: absolute; border: 2px solid #888; border-radius: 6px; display: flex;
+    align-items: center; justify-content: center; background: #1e1e1e; }
+  .cw .v { position: absolute; bottom: -18px; font-size: 11px; background: #000; padding: 0 4px;
+    border-radius: 3px; white-space: nowrap; }
   .widget { background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 12px; min-width: 160px; }
   .widget .label { font-size: 13px; color: #aaa; }
   .widget .value { font-size: 28px; margin-top: 4px; }
@@ -20,10 +27,47 @@
 <body>
 <h1>{{ screen.name }}</h1>
 <div id="status">подключение...</div>
+<div style="margin:8px 0"><a style="color:#60a5fa" href="/screens/{{ screen.id }}/edit/">→ открыть в конструкторе</a></div>
+<div id="canvas"></div>
+<h2 style="font-size:15px;color:#888">Legacy-виджеты (row/col)</h2>
 <div id="grid"></div>
 <script>
 const SCREEN_ID = {{ screen.id }};
 const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.hostname + ':9000/ws/live';
+// Виджеты конструктора + маппинг tag_id->name/unit из Django-контекста
+const CW = JSON.parse('{{ widgets_json|escapejs }}');
+const TAGMAP = JSON.parse('{{ tagmap_json|escapejs }}');
+const liveVals = {};
+
+// Условное форматирование — те же пороги, что в конструкторе
+function statusColor(w, val) {
+  const v = Number(val);
+  if (val === undefined || val === null || Number.isNaN(v)) return w.color;
+  if (w.alarm_above !== null && w.alarm_above !== undefined && v >= w.alarm_above) return '#ef4444';
+  if (w.warn_above !== null && w.warn_above !== undefined && v >= w.warn_above) return '#f59e0b';
+  if (w.type === 'pump' || w.type === 'motor' || w.type === 'fan') return v ? '#22c55e' : '#ef4444';
+  return w.color;
+}
+
+function renderCanvas() {
+  const c = document.getElementById('canvas');
+  c.innerHTML = '';
+  if (!CW.length) { c.style.display = 'none'; return; }
+  c.style.display = 'block';
+  c.style.width = {{ screen.width }} + 'px';
+  c.style.height = {{ screen.height }} + 'px';
+  CW.forEach(w => {
+    const tname = w.tag_id && TAGMAP[w.tag_id] ? TAGMAP[w.tag_id].name : null;
+    const unit = w.tag_id && TAGMAP[w.tag_id] ? TAGMAP[w.tag_id].unit : '';
+    const val = tname ? liveVals[tname] : undefined;
+    const el = document.createElement('div');
+    el.className = 'cw';
+    el.style.cssText = `left:${w.x}px;top:${w.y}px;width:${w.w}px;height:${w.h}px;transform:rotate(${w.rotation || 0}deg);border-color:${statusColor(w, val)}`;
+    el.innerHTML = `<span>${w.label || w.type}</span>` +
+      (val !== undefined ? `<span class="v">${val} ${unit}</span>` : (tname ? `<span class="v">${tname}</span>` : ''));
+    c.appendChild(el);
+  });
+}
 
 async function loadWidgets() {
   const res = await fetch(`/api/screens/${SCREEN_ID}/widgets/`);
@@ -69,12 +113,24 @@ function updateWidgets(tags) {
 
 (async () => {
   await loadWidgets();
+  renderCanvas();
   const status = document.getElementById('status');
   function connect() {
     const ws = new WebSocket(WS_URL);
-    ws.onopen = () => { status.textContent = 'live: ' + WS_URL; };
+    ws.onopen = () => {
+      status.textContent = 'live: ' + WS_URL;
+      // подписаться на тэги конструктора (именами) + legacy-тэги из grid
+      const names = new Set(CW.filter(w => w.tag_id && TAGMAP[w.tag_id]).map(w => TAGMAP[w.tag_id].name));
+      document.querySelectorAll('.widget').forEach(el => names.add(el.dataset.tag));
+      if (names.size) ws.send(JSON.stringify({subscribe: [...names]}));
+    };
     ws.onmessage = (ev) => {
-      try { updateWidgets(JSON.parse(ev.data)); } catch (e) { console.error(e); }
+      try {
+        const data = JSON.parse(ev.data);
+        updateWidgets(data);
+        Object.assign(liveVals, data);
+        renderCanvas();
+      } catch (e) { console.error(e); }
     };
     ws.onclose = () => { status.textContent = 'переподключение...'; setTimeout(connect, 2000); };
     ws.onerror = () => ws.close();
